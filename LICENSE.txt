@@ -19,3 +19,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+CASTOPIA WIKI CONTENT
+
+This MIT License applies to the Castopia Bot source code owned by the copyright
+holder. It does not grant rights to content retrieved from or displayed from
+the Castopia Wiki, including third-party text, images, trademarks, logos, or
+other material owned by their respective rights holders.
+
+Wiki content is subject to the licensing terms and other conditions specified
+by the Wiki and its rights holders. Users of the bot are responsible for
+complying with those terms when using, reproducing, modifying, or distributing
+Wiki content.
+
+For the applicable terms of the source content, refer to the Castopia Wiki's
+own licensing information.
