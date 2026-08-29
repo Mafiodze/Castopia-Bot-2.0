@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from time import monotonic
 from typing import Awaitable, Callable, TypeVar, cast
+from urllib.parse import unquote, urlsplit
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .constants import FOOTER_TEXT, load_wiki_config
+from .constants import FOOTER_TEXT, SYSTEM_TAGS, load_wiki_config
 from .page_parsing import (
     Article,
     UpstreamAccessError,
@@ -40,7 +42,53 @@ AUTOCOMPLETE_TIMEOUT = 2.5
 VIEW_TIMEOUT = 10 * 60
 DISCORD_FIELD_VALUE_LIMIT = 1024
 
+_SKIP_LINK_CATEGORIES = frozenset(
+    {
+        "system",
+        "forum",
+        "nav",
+        "admin",
+        "search",
+        "user",
+        "users",
+        "-",
+    }
+)
+_SKIP_LINK_PAGES = frozenset(
+    {
+        "cauldron-articles",
+        "start",
+        "main",
+        "forum-start",
+    }
+)
+
 T = TypeVar("T")
+
+
+def first_wiki_article_url(text: str, base_url: str) -> str | None:
+    """First Castopia article URL in a Discord message, or None."""
+    host = urlsplit(base_url).netloc.removeprefix("www.")
+    if not host:
+        return None
+    pattern = re.compile(
+        rf"(?:https?://)?(?:www\.)?{re.escape(host)}/([^\s<>\]\)\"']+)",
+        re.IGNORECASE,
+    )
+    origin = base_url.rstrip("/")
+    for match in pattern.finditer(text or ""):
+        raw = unquote(match.group(1).split("?", 1)[0].split("#", 1)[0]).strip("/")
+        if not raw:
+            continue
+        page_id = raw.split("/", 1)[0]
+        leaf = page_id.casefold()
+        category = leaf.split(":", 1)[0] if ":" in leaf else "_default"
+        if category in _SKIP_LINK_CATEGORIES or leaf in _SKIP_LINK_CATEGORIES:
+            continue
+        if leaf in _SKIP_LINK_PAGES:
+            continue
+        return f"{origin}/{page_id}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +271,7 @@ class DscCog(commands.Cog):
         "randompage": _RateLimit(2, 20),
         "fullsearch": _RateLimit(1, 30),
         "autor": _RateLimit(1, 30),
+        "linkembed": _RateLimit(4, 20),
     }
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -390,6 +439,50 @@ class DscCog(commands.Cog):
 
         await self._send_interaction_error(interaction, text)
 
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or not message.content:
+            return
+        prefixes = await self.bot.get_prefix(message)
+        if isinstance(prefixes, str):
+            prefixes = (prefixes,)
+        if any(
+            message.content.startswith(prefix)
+            for prefix in prefixes
+            if prefix
+        ):
+            return
+
+        url = first_wiki_article_url(message.content, self.wiki.base_url)
+        if not url:
+            return
+        if await self.rate_limiter.retry_after(message.author.id, "linkembed"):
+            return
+
+        started_at = monotonic()
+        try:
+            async with message.channel.typing():
+                article = await self.wiki.get_article(url.rsplit("/", 1)[-1], url)
+            if article.tags & SYSTEM_TAGS:
+                return
+            try:
+                await message.edit(suppress=True)
+            except discord.HTTPException:
+                logger.debug("discord_link_suppress_failed")
+            await message.reply(
+                embed=_article_embed(article),
+                mention_author=False,
+            )
+        except (UpstreamNotFoundError, UpstreamContentError, WikiError):
+            logger.info("discord_link_embed_skip url=%s", url)
+        except Exception:
+            logger.exception("discord_link_embed_failed url=%s", url)
+        finally:
+            logger.info(
+                "discord_command command=linkembed mode=message duration_ms=%s",
+                round((monotonic() - started_at) * 1000),
+            )
+
     @commands.hybrid_command(
         name="help",
         description="Показать команды Castopia",
@@ -402,7 +495,8 @@ class DscCog(commands.Cog):
                 "`.fullsearch <текст>` или `/fullsearch` — поиск по содержимому\n"
                 "`.autor <ник>` или `/autor` — статьи автора\n"
                 "`.tags <тег> [тег…]` или `/tags` — статьи с тегами\n"
-                "`.randompage` или `/randompage` — случайная статья\n\n"
+                "`.randompage` или `/randompage` — случайная статья\n"
+                "Ссылка на статью в чате — карточка сама, без команды.\n\n"
                 "Бот работает только с публичными страницами и не обходит "
                 "ограничения источника."
             ),

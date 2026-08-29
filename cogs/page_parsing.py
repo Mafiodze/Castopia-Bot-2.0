@@ -8,6 +8,7 @@ site owner's permission.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html as html_lib
 import json
 import logging
@@ -335,6 +336,8 @@ class WikiClient:
             try:
                 started_at = monotonic()
 
+                got_ok = False
+                body = ""
                 async with self._semaphore:
                     async with self._session.get(
                         url,
@@ -369,7 +372,6 @@ class WikiClient:
                                     f"Источник временно недоступен "
                                     f"(HTTP {response.status})."
                                 )
-
                             delay = self._retry_delay(response, attempt)
 
                         elif 400 <= response.status < 500:
@@ -377,11 +379,28 @@ class WikiClient:
                                 f"Источник отклонил запрос "
                                 f"(HTTP {response.status})."
                             )
-
                         else:
-                            return await response.text(errors="replace")
+                            body = await response.text(errors="replace")
+                            got_ok = True
 
-                await asyncio.sleep(delay)
+                if not got_ok:
+                    await asyncio.sleep(delay)
+                    continue
+
+                if self._is_anubis_page(body):
+                    await self._pass_anubis(body, redir=url)
+                    async with self._semaphore:
+                        async with self._session.get(
+                            url,
+                            allow_redirects=True,
+                        ) as retry:
+                            body = await retry.text(errors="replace")
+                    if self._is_anubis_page(body):
+                        raise UpstreamAccessError(
+                            "Anubis blocked the request after a challenge. "
+                            "Allowlist the bot User-Agent or set WIKI_ANUBIS_COOKIE."
+                        )
+                return body
 
             except (
                 UpstreamAccessError,
@@ -1258,6 +1277,103 @@ class WikiClient:
                 return str(cookie.value)
         return self._csrf_token
 
+    @staticmethod
+    def _is_anubis_page(html: str) -> bool:
+        if not html:
+            return False
+        if 'id="anubis_challenge"' in html or "anubis_challenge" in html:
+            return True
+        plain = html_lib.unescape(html)
+        return "making sure you're not a bot" in plain.casefold()
+
+    @staticmethod
+    def _anubis_pow(random_data: str, difficulty: int) -> tuple[str, int]:
+        """SHA-256(data+nonce) with `difficulty` leading zero hex nibbles."""
+        needed_bytes = difficulty // 2
+        odd_nibble = difficulty % 2 == 1
+        nonce = 0
+        prefix = random_data.encode()
+        while True:
+            digest = hashlib.sha256(prefix + str(nonce).encode()).digest()
+            if digest[:needed_bytes] == b"\x00" * needed_bytes and (
+                not odd_nibble or digest[needed_bytes] >> 4 == 0
+            ):
+                return digest.hex(), nonce
+            nonce += 1
+
+    def _parse_anubis_challenge(self, html: str) -> dict[str, Any] | None:
+        soup = BeautifulSoup(html, "lxml")
+        node = soup.select_one("#anubis_challenge")
+        raw = node.get_text() if node is not None else ""
+        if not raw.strip():
+            return None
+        try:
+            blob = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(blob, dict):
+            return None
+        challenge = blob.get("challenge")
+        if not isinstance(challenge, dict):
+            challenge = blob
+        rules = blob.get("rules") if isinstance(blob.get("rules"), dict) else {}
+        random_data = str(challenge.get("randomData") or "")
+        ident = str(challenge.get("id") or "")
+        try:
+            difficulty = int(
+                challenge.get("difficulty") or rules.get("difficulty") or 0
+            )
+        except (TypeError, ValueError):
+            difficulty = 0
+        if not random_data or not ident or difficulty <= 0:
+            return None
+        return {
+            "id": ident,
+            "randomData": random_data,
+            "difficulty": difficulty,
+        }
+
+    async def _pass_anubis(self, html: str, *, redir: str) -> None:
+        if self._session is None:
+            raise UpstreamUnavailableError("HTTP client session is unavailable.")
+        parsed = self._parse_anubis_challenge(html)
+        if parsed is None:
+            raise UpstreamAccessError(
+                "Anubis blocked the page and the challenge could not be parsed. "
+                "Allowlist the bot User-Agent or set WIKI_ANUBIS_COOKIE."
+            )
+        started = monotonic()
+        digest, nonce = self._anubis_pow(
+            parsed["randomData"], parsed["difficulty"]
+        )
+        elapsed_ms = round((monotonic() - started) * 1000)
+        params = {
+            "id": parsed["id"],
+            "response": digest,
+            "nonce": str(nonce),
+            "redir": redir,
+            "elapsedTime": str(elapsed_ms),
+        }
+        pass_url = f"{self.base_url}/.within.website/x/cmd/anubis/api/pass-challenge"
+        logger.info(
+            "wiki_anubis_solve difficulty=%s nonce=%s duration_ms=%s",
+            parsed["difficulty"],
+            nonce,
+            elapsed_ms,
+        )
+        async with self._session.get(
+            pass_url,
+            params=params,
+            allow_redirects=True,
+        ) as response:
+            await response.read()
+            if response.status >= 400:
+                raise UpstreamAccessError(
+                    f"Anubis rejected the solved challenge (HTTP {response.status}). "
+                    "Allowlist the bot User-Agent or set WIKI_ANUBIS_COOKIE."
+                )
+        logger.info("wiki_anubis_ok")
+
     def _auth_headers(self, *, referer: str | None = None) -> dict[str, str]:
         token = self._csrf_from_jar() or self._csrf_token
         headers = {
@@ -1283,25 +1399,31 @@ class WikiClient:
         logger.info("wiki_login_start user=%s", self.config.username)
         async with self._session.get(login_url, allow_redirects=True) as response:
             body = await response.text(errors="replace")
-            if "Making sure you're not a bot" in body:
-                logger.error(
-                    "wiki_login_failed user=%s reason=anubis_challenge http=%s",
-                    self.config.username,
-                    response.status,
-                )
-                raise UpstreamAccessError(
-                    "Anubis blocked the login page. Set WIKI_ANUBIS_COOKIE "
-                    "or allowlist the bot User-Agent."
-                )
-            if response.status >= 400:
-                logger.error(
-                    "wiki_login_failed user=%s reason=login_page_http http=%s",
-                    self.config.username,
-                    response.status,
-                )
-                raise UpstreamUnavailableError(
-                    f"Login page unavailable (HTTP {response.status})."
-                )
+            status = response.status
+        if self._is_anubis_page(body):
+            await self._pass_anubis(body, redir=login_url)
+            async with self._session.get(login_url, allow_redirects=True) as response:
+                body = await response.text(errors="replace")
+                status = response.status
+        if self._is_anubis_page(body):
+            logger.error(
+                "wiki_login_failed user=%s reason=anubis_challenge http=%s",
+                self.config.username,
+                status,
+            )
+            raise UpstreamAccessError(
+                "Anubis blocked the login page. Set WIKI_ANUBIS_COOKIE "
+                "or allowlist the bot User-Agent."
+            )
+        if status >= 400:
+            logger.error(
+                "wiki_login_failed user=%s reason=login_page_http http=%s",
+                self.config.username,
+                status,
+            )
+            raise UpstreamUnavailableError(
+                f"Login page unavailable (HTTP {status})."
+            )
 
         soup = BeautifulSoup(body, "lxml")
         token_node = soup.select_one('input[name="csrfmiddlewaretoken"]')
@@ -1368,7 +1490,7 @@ class WikiClient:
 
     @staticmethod
     def _diagnose_login_failure(html: str) -> str:
-        if "Making sure you're not a bot" in html:
+        if self._is_anubis_page(html):
             return "anubis_challenge"
         soup = BeautifulSoup(html, "lxml")
         if soup.select_one('form input[name="password"]'):

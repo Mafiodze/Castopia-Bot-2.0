@@ -78,6 +78,25 @@ class WikiClientTests(unittest.IsolatedAsyncioTestCase):
             WikiClient._parse_total_pages('<span class="pager-no">page 1 of 5</span>'), 5
         )
 
+    def test_anubis_detects_html_entity_title(self) -> None:
+        html = "<title>Making sure you&#39;re not a bot!</title>"
+        self.assertTrue(WikiClient._is_anubis_page(html))
+        self.assertTrue(
+            WikiClient._is_anubis_page('<script id="anubis_challenge"></script>')
+        )
+        self.assertFalse(WikiClient._is_anubis_page("<form>login</form>"))
+
+    def test_anubis_pow_meets_difficulty(self) -> None:
+        digest, nonce = WikiClient._anubis_pow("castopia", 4)
+        raw = bytes.fromhex(digest)
+        self.assertTrue(raw.startswith(b"\x00\x00"))
+        import hashlib
+
+        self.assertEqual(
+            hashlib.sha256(f"castopia{nonce}".encode()).hexdigest(),
+            digest,
+        )
+
     async def test_empty_article_listing_is_diagnostic_error(self) -> None:
         client = make_client()
         client.fetch_html = AsyncMock(return_value='<div id="page-content"></div>')
