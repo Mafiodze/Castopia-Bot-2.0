@@ -16,8 +16,6 @@ On Discord the same commands also work with the `.` prefix.
 
 Card layout (except `/tags` and `/help`): title → first sentence of the article (no rating widget) → author → rating → tags → last edit. CC BY-SA 3.0 appears once: Discord footer, Telegram bottom.
 
-On Discord, a `castopia.site/...` link posts an article card **under that message**. Discord's grey site preview is not attached. Needs Manage Webhooks and Manage Messages. Forum and system channels are ignored.
-
 ## FamiliarBot
 
 Only `sandbox:` URLs. Does not move pages into mainspace. No WIP. No JSONL.

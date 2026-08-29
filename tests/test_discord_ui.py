@@ -4,14 +4,7 @@ import unittest
 
 from discord.ext import commands
 
-from cogs.dsc import (
-    DscCog,
-    SearchResultsView,
-    _RateLimit,
-    _RateLimiter,
-    first_wiki_article_url,
-    silence_discord_unfurl,
-)
+from cogs.dsc import DscCog, SearchResultsView, _RateLimit, _RateLimiter
 from cogs.page_parsing import Article
 
 
@@ -71,65 +64,3 @@ class DiscordUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await limiter.retry_after(user, "randompage"), 0)
         self.assertGreater(await limiter.retry_after(user, "randompage"), 0)
 
-
-class WikiLinkEmbedTests(unittest.TestCase):
-    BASE = "https://castopia.site"
-
-    def test_picks_sandbox_and_main(self) -> None:
-        self.assertEqual(
-            first_wiki_article_url(
-                "смотри https://castopia.site/sandbox:ritual-6 пж",
-                self.BASE,
-            ),
-            "https://castopia.site/sandbox:ritual-6",
-        )
-        self.assertEqual(
-            first_wiki_article_url("https://www.castopia.site/ritual-6/", self.BASE),
-            "https://castopia.site/ritual-6",
-        )
-        self.assertEqual(
-            first_wiki_article_url("<https://castopia.site/archived:ritual-7>", self.BASE),
-            "https://castopia.site/archived:ritual-7",
-        )
-
-    def test_skips_forum_and_system(self) -> None:
-        self.assertIsNone(
-            first_wiki_article_url(
-                "https://castopia.site/forum/t-100/zurnal-udalenii",
-                self.BASE,
-            )
-        )
-        self.assertIsNone(
-            first_wiki_article_url(
-                "https://castopia.site/system:all-pages",
-                self.BASE,
-            )
-        )
-        self.assertIsNone(
-            first_wiki_article_url("https://castopia.site/cauldron-articles", self.BASE)
-        )
-
-    def test_article_from_comments_path(self) -> None:
-        self.assertEqual(
-            first_wiki_article_url(
-                "https://castopia.site/sandbox:ritual-6/comments/show",
-                self.BASE,
-            ),
-            "https://castopia.site/sandbox:ritual-6",
-        )
-
-    def test_first_article_wins(self) -> None:
-        text = (
-            "https://castopia.site/forum/t-77/x "
-            "https://castopia.site/sandbox:doc-4"
-        )
-        self.assertEqual(
-            first_wiki_article_url(text, self.BASE),
-            "https://castopia.site/sandbox:doc-4",
-        )
-
-    def test_silence_wraps_url_once(self) -> None:
-        text = "смотри https://castopia.site/sandbox:ritual-6"
-        wrapped = silence_discord_unfurl(text, self.BASE)
-        self.assertEqual(wrapped, "смотри <https://castopia.site/sandbox:ritual-6>")
-        self.assertEqual(silence_discord_unfurl(wrapped, self.BASE), wrapped)
