@@ -1,50 +1,50 @@
 # Castopia Bot
 
-Три процесса, один Railway-сервис: Discord, Telegram и FamiliarBot. Общий клиент вики — `cogs/page_parsing.py`.
+Three processes, one Railway service: Discord, Telegram, and FamiliarBot. Shared wiki client: `cogs/page_parsing.py`.
 
 ```
 start.sh
-  dsc/bot.py          → поиск по вики, без логина
-  tg/bot.py           → то же в Telegram
-  familiarbot/bot.py  → модерация котла, логин FamiliarBot
+  dsc/bot.py          → wiki search, no login
+  tg/bot.py           → the same in Telegram
+  familiarbot/bot.py  → sandbox moderation, FamiliarBot login
 ```
 
-## Команды (Discord и Telegram)
+## Commands (Discord and Telegram)
 
 `/search` `/fullsearch` `/autor` `/randompage` `/tags` `/help`  
-В Discord те же команды с префиксом `.`
+On Discord the same commands also work with the `.` prefix.
 
-Карточка (кроме `/tags` и `/help`): заголовок → первое предложение статьи (без виджета рейтинга) → автор → рейтинг → теги → последнее изменение. Лицензия CC BY-SA 3.0 один раз: в Discord в футере, в Telegram внизу.
+Card layout (except `/tags` and `/help`): title → first sentence of the article (no rating widget) → author → rating → tags → last edit. CC BY-SA 3.0 appears once: Discord footer, Telegram bottom.
 
-В Discord ссылка на `castopia.site/...` в обычном сообщении даёт ту же карточку автоматически (не форум и не system).
+On Discord, a `castopia.site/...` link posts an article card **under that message**. Discord's grey site preview is not attached. Needs Manage Webhooks and Manage Messages. Forum and system channels are ignored.
 
 ## FamiliarBot
 
-Только URL с `sandbox:`. Не переносит в основное пространство. Нет WIP. Нет JSONL.
+Only `sandbox:` URLs. Does not move pages into mainspace. No WIP. No JSONL.
 
-| | условие | срок | действие |
+| | condition | delay | action |
 |---|---|---|---|
-| удаление | рейтинг **< 3.0**, голосов **≥ 4** | сутки | `sandbox:` → `deleted:` + `статус:удалено` + пост в [t-100](https://castopia.site/forum/t-100/zurnal-udalenii) |
-| серая зона | **3.0 ≤ рейтинг < 4.0**, голосов **≥ 4** | 30 дней | то же удаление |
-| набран | рейтинг **≥ 4.0**, голосов **≥ 4** | неделя | тег `котел:к_переносу`, URL не трогает |
-| мало голосов | < 4 | — | только `статус:проверка` |
+| delete | rating **< 3.0**, votes **≥ 4** | 1 day | `sandbox:` → `deleted:` + `статус:удалено` + post in [t-100](https://castopia.site/forum/t-100/zurnal-udalenii) |
+| gray zone | **3.0 ≤ rating < 4.0**, votes **≥ 4** | 30 days | same deletion |
+| passed | rating **≥ 4.0**, votes **≥ 4** | 1 week | tag `котел:к_переносу`, URL unchanged |
+| too few votes | < 4 | — | `статус:проверка` only |
 
-Теги: `статус:проверка` всем в котле; `котел:к_удалению` / `котел:к_тегованию` / `котел:рейтинг_набран` / `котел:к_переносу`. Если рейтинг отыграл — тег снимается.
+Tags: `статус:проверка` on every sandbox page; `котел:к_удалению` / `котел:к_тегованию` / `котел:рейтинг_набран` / `котел:к_переносу`. If the rating recovers, the tag is removed.
 
-После смены тегов — «Системное уведомление» в обсуждении статьи. С `draft:` снимаются все теги. Не трогает: `основное_пространство`, `архив`, `удалено`, `18+`, `гайд`, `компонент`, `навигация`, `поиск`, `системный`, `структура_сайта`.
+After tag changes, a "System notification" is posted in the article discussion. All tags are stripped from `draft:`. Untouched: `основное_пространство`, `архив`, `удалено`, `18+`, `гайд`, `компонент`, `навигация`, `поиск`, `системный`, `структура_сайта`.
 
-Цикл каждые 10 минут. `FAMILIARBOT_DRY_RUN=true` — только логи.
+Cycle every 10 minutes. `FAMILIARBOT_DRY_RUN=true` logs only.
 
 ## Railway
 
-Переменные: `DISCORD_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `WIKI_USERNAME`, `WIKI_PASSWORD`. По желанию: `DISCORD_GUILD_ID`, `WIKI_USER_AGENT` (`CastopiaBot/2.0 (+https://castopia.site)` — в allowlist Anubis), `WIKI_ANUBIS_COOKIE`, `FAMILIARBOT_ENABLED`, `FAMILIARBOT_DRY_RUN`, `LOG_LEVEL`.
+Variables: `DISCORD_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `WIKI_USERNAME`, `WIKI_PASSWORD`. Optional: `DISCORD_GUILD_ID`, `WIKI_USER_AGENT` (`CastopiaBot/2.0 (+https://castopia.site)` — Anubis allowlist), `WIKI_ANUBIS_COOKIE`, `FAMILIARBOT_ENABLED`, `FAMILIARBOT_DRY_RUN`, `LOG_LEVEL`.
 
-Пороги в коде (`familiarbot/config.py`), не в env. Пароль только в Railway, не в git.
+Thresholds live in code (`familiarbot/config.py`), not env. Password stays in Railway, never in git.
 
-Сборка: Dockerfile в корне. Старт: `./start.sh`. Реплика: 1. Локально: скопировать `.env.example` → `.env`.
+Build: Dockerfile at the repo root. Start: `./start.sh`. Replicas: 1. Locally: copy `.env.example` → `.env`.
 
 ```
 python -m unittest discover -s tests -q
 ```
 
-Права аккаунта FamiliarBot: editor, теги, переименование в `deleted:`, посты в обсуждении статьи и в t-100.
+FamiliarBot account needs: editor, tags, rename into `deleted:`, posts in the article discussion and in t-100.

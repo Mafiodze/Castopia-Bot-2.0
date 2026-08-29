@@ -41,6 +41,7 @@ MAX_TAGS = 5
 AUTOCOMPLETE_TIMEOUT = 2.5
 VIEW_TIMEOUT = 10 * 60
 DISCORD_FIELD_VALUE_LIMIT = 1024
+UNFURL_WEBHOOK_NAME = "Castopia"
 
 _SKIP_LINK_CATEGORIES = frozenset(
     {
@@ -89,6 +90,18 @@ def first_wiki_article_url(text: str, base_url: str) -> str | None:
             continue
         return f"{origin}/{page_id}"
     return None
+
+
+def silence_discord_unfurl(text: str, base_url: str) -> str:
+    """Wrap wiki URLs in <> so Discord does not attach its own link preview."""
+    host = urlsplit(base_url).netloc.removeprefix("www.")
+    if not host or not text:
+        return text
+    pattern = re.compile(
+        rf"(?<!<)(https?://(?:www\.)?{re.escape(host)}/[^\s<>\]\)\"']+)",
+        re.IGNORECASE,
+    )
+    return pattern.sub(r"<\1>", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +294,7 @@ class DscCog(commands.Cog):
             reader_concurrency=PUBLIC_READER_CONCURRENCY,
         )
         self.rate_limiter = _RateLimiter(self.RATE_LIMITS)
+        self._webhooks: dict[int, discord.Webhook] = {}
 
     async def cog_load(self) -> None:
         await self.wiki.start()
@@ -439,9 +453,46 @@ class DscCog(commands.Cog):
 
         await self._send_interaction_error(interaction, text)
 
+    async def _unfurl_webhook(
+        self,
+        message: discord.Message,
+    ) -> tuple[discord.Webhook, discord.Thread | None] | tuple[None, None]:
+        channel = message.channel
+        thread = channel if isinstance(channel, discord.Thread) else None
+        host = thread.parent if thread is not None else channel
+        if not isinstance(host, discord.TextChannel):
+            return None, None
+        cached = self._webhooks.get(host.id)
+        if cached is not None:
+            return cached, thread
+        try:
+            existing = await host.webhooks()
+            hook = discord.utils.get(existing, name=UNFURL_WEBHOOK_NAME)
+            if hook is None:
+                hook = await host.create_webhook(
+                    name=UNFURL_WEBHOOK_NAME,
+                    reason="Карточка статьи под ссылкой в сообщении",
+                )
+        except discord.Forbidden:
+            logger.warning(
+                "discord_link_webhook_forbidden channel=%s",
+                host.id,
+            )
+            return None, None
+        except discord.HTTPException:
+            logger.exception("discord_link_webhook_failed")
+            return None, None
+        self._webhooks[host.id] = hook
+        return hook, thread
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not message.content:
+        if message.author.bot or message.webhook_id or not message.content:
+            return
+        if not isinstance(
+            message.channel,
+            (discord.TextChannel, discord.Thread),
+        ):
             return
         prefixes = await self.bot.get_prefix(message)
         if isinstance(prefixes, str):
@@ -461,18 +512,29 @@ class DscCog(commands.Cog):
 
         started_at = monotonic()
         try:
-            async with message.channel.typing():
-                article = await self.wiki.get_article(url.rsplit("/", 1)[-1], url)
+            article = await self.wiki.get_article(url.rsplit("/", 1)[-1], url)
             if article.tags & SYSTEM_TAGS:
                 return
+            hook, thread = await self._unfurl_webhook(message)
+            if hook is None:
+                return
+            kwargs: dict[str, object] = {
+                "content": silence_discord_unfurl(
+                    message.content, self.wiki.base_url
+                ),
+                "username": message.author.display_name,
+                "avatar_url": message.author.display_avatar.url,
+                "embed": _article_embed(article),
+                "wait": True,
+                "allowed_mentions": discord.AllowedMentions.none(),
+            }
+            if thread is not None:
+                kwargs["thread"] = thread
+            await hook.send(**kwargs)
             try:
-                await message.edit(suppress=True)
+                await message.delete()
             except discord.HTTPException:
-                logger.debug("discord_link_suppress_failed")
-            await message.reply(
-                embed=_article_embed(article),
-                mention_author=False,
-            )
+                logger.debug("discord_link_delete_failed")
         except (UpstreamNotFoundError, UpstreamContentError, WikiError):
             logger.info("discord_link_embed_skip url=%s", url)
         except Exception:
@@ -496,7 +558,7 @@ class DscCog(commands.Cog):
                 "`.autor <ник>` или `/autor` — статьи автора\n"
                 "`.tags <тег> [тег…]` или `/tags` — статьи с тегами\n"
                 "`.randompage` или `/randompage` — случайная статья\n"
-                "Ссылка на статью в чате — карточка сама, без команды.\n\n"
+                "Ссылка на статью — карточка под тем же сообщением.\n\n"
                 "Бот работает только с публичными страницами и не обходит "
                 "ограничения источника."
             ),

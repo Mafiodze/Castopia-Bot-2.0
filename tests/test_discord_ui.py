@@ -10,6 +10,7 @@ from cogs.dsc import (
     _RateLimit,
     _RateLimiter,
     first_wiki_article_url,
+    silence_discord_unfurl,
 )
 from cogs.page_parsing import Article
 
@@ -126,3 +127,9 @@ class WikiLinkEmbedTests(unittest.TestCase):
             first_wiki_article_url(text, self.BASE),
             "https://castopia.site/sandbox:doc-4",
         )
+
+    def test_silence_wraps_url_once(self) -> None:
+        text = "смотри https://castopia.site/sandbox:ritual-6"
+        wrapped = silence_discord_unfurl(text, self.BASE)
+        self.assertEqual(wrapped, "смотри <https://castopia.site/sandbox:ritual-6>")
+        self.assertEqual(silence_discord_unfurl(wrapped, self.BASE), wrapped)
